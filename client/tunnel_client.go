@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leviathan1995/spleen/util"
+	"github.com/leviathan0992/spleen/util"
 )
 
 /* TunnelClient maintains connections to the tunnel server. */

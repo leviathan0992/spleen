@@ -27,7 +27,7 @@ Spleen 侧重于简洁的配置流与多层级的安全防护:
 在**公网服务器**与**内网服务器**上分别执行以下命令克隆项目:
 
 ```bash
-git clone https://github.com/leviathan/spleen.git
+git clone https://github.com/leviathan0992/spleen.git
 cd spleen
 ```
 
@@ -136,7 +136,8 @@ docker-compose run --rm spleen-init
 
 由于采用“全站统一 Token”设计，新增第 2、3...n 个内网节点非常简单：
 
-1.  **Git Clone**: 在新的内网服务器上克隆仓库：`git clone https://github.com/leviathan/spleen.git`。
+1.  **Git Clone**: 在新的内网服务器上克隆仓库：`git clone https://github.com/leviathan0992/spleen.git
+`。
 2.  **配置**: 编辑仓库自带的 `client-config.json`，填入公网服务器地址及全局 `token`。
 3.  **启动**: 运行 `docker-compose up -d spleen-client`。客户端启动后会自动生成独特的 ID。
 4.  **获取 ID**: 运行 `cat data/client/.spleen_client_id` 获取该客户端的 ID。

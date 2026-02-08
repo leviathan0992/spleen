@@ -27,7 +27,7 @@ Docker Compose is recommended for rapid deployment.
 Clone the repository on both your **public server** and **internal host**:
 
 ```bash
-git clone https://github.com/leviathan/spleen.git
+git clone https://github.com/leviathan0992/spleen.git
 cd spleen
 ```
 
@@ -136,7 +136,7 @@ Note:
 
 The "One Token" architecture makes it easy to scale horizontally:
 
-1.  **Git Clone**: Clone the repository on your new host: `git clone https://github.com/leviathan/spleen.git`.
+1.  **Git Clone**: Clone the repository on your new host: `git clone https://github.com/leviathan0992/spleen.git`.
 2.  **Configure**: Edit `client-config.json` with the shared global `token` and your `server_addr`.
 3.  **Start**: Run `docker-compose up -d spleen-client`. It will generate a unique ID automatically.
 4.  **Get ID**: Run `cat data/client/.spleen_client_id` to obtain the client's ID.

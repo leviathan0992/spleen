@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/leviathan1995/spleen/util"
+	"github.com/leviathan0992/spleen/util"
 )
 
 /* TunnelManager manages all tunnel connections and public port mappings. */
