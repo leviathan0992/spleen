@@ -21,13 +21,11 @@ import (
 const Version = "1.0.0"
 
 func main() {
-	configPath := flag.String("d", ".spleen-server.json", "Path to configuration file")
+	configPath := flag.String("d", "server-config.json", "Path to configuration file")
 	clean := flag.Bool("clean", false, "Clear state files and re-initialize")
 	version := flag.Bool("version", false, "Show version information")
 
 	/* Utility flags */
-	genPwd := flag.String("gen-pwd", "", "Generate and print password hash for config")
-	/* genToken removed as we use plaintext token now. */
 	genSecret := flag.Bool("gen-secret", false, "Generate and print a random strong secret for Token")
 	genID := flag.Bool("gen-id", false, "Generate and print a new UUID for ClientID")
 	initConfigs := flag.Bool("init", false, "Generate default server and client config files (Recommended)")
@@ -53,13 +51,6 @@ func main() {
 	if *genSecret {
 		/* Generate 32-char hex string. */
 		fmt.Println(util.GenerateNonce() + util.GenerateNonce())
-		return
-	}
-
-	/* *genToken check removed. */
-
-	if *genPwd != "" {
-		fmt.Println(hashPassword(*genPwd))
 		return
 	}
 
@@ -100,8 +91,7 @@ func main() {
 	rules := wp.GetMappingRules()
 	if len(rules) > 0 {
 		if err := tunnel.ApplyMappingRules(rules); err != nil {
-			fmt.Printf("[FATAL] Failed to apply mapping rules: %v\n", err)
-			os.Exit(1)
+			fmt.Printf("[WARN] Some mapping rules failed to apply: %v\n", err)
 		}
 	}
 
@@ -124,37 +114,29 @@ func main() {
 }
 
 func generateDefaultConfigs() {
-	token := util.GenerateNonce() + util.GenerateNonce() /* 32-char hex string */
+	token := util.GenerateNonce() /* 32-char hex string. */
 
-	/* Generate ClientID and save to data/client */
-	clientID := util.GenerateUUID()
-	clientDataDir := filepath.Join("data", "client")
-	if _, err := os.Stat(clientDataDir); os.IsNotExist(err) {
-		_ = os.MkdirAll(clientDataDir, 0755)
-	}
-	idFile := filepath.Join(clientDataDir, ".spleen_client_id")
-	if err := os.WriteFile(idFile, []byte(clientID), 0600); err != nil {
-		fmt.Printf("[WARN] Failed to save ClientID: %v\n", err)
-	}
-
+	const width = 61
 	fmt.Println()
-	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                                SPLEEN TOKEN                               ║")
-	fmt.Println("╠═══════════════════════════════════════════════════════════════════════════╣")
-	fmt.Printf("║  Token:    %s  ║\n", token)
-	fmt.Printf("║  ClientID: %-59s║\n", clientID)
-	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════╝")
+	fmt.Println("╔═════════════════════════════════════════════════════════════╗")
+	fmt.Printf("║%-61s║\n", centerText("INITIALIZATION SUCCESS", width))
+	fmt.Println("╠═════════════════════════════════════════════════════════════╣")
+	fmt.Printf("║%-61s║\n", padRight("  Token:     "+token, width))
+	fmt.Println("╚═════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+	fmt.Println("[INFO] Please copy this Token to both server and client config.")
+	fmt.Println("[INFO] ClientID will be auto-generated when you start the client.")
 }
 
 func printBanner(panelAddr, tunnelAddr, configPath string, rulesCount int, certExpiry time.Time, https bool) {
-	const width = 61 // Inner content width
+	const width = 61 /* Inner content width */
 
 	fmt.Println()
 	fmt.Println("╔═════════════════════════════════════════════════════════════╗")
 	fmt.Printf("║%-61s║\n", centerText("Spleen Server v"+Version, width))
 	fmt.Println("╠═════════════════════════════════════════════════════════════╣")
 
-	// Dashboard
+	/* Dashboard */
 	dashLabel := "  Dashboard:  "
 	if https {
 		fmt.Printf("║%-61s║\n", padRight(dashLabel+"https://"+panelAddr, width))
@@ -162,22 +144,22 @@ func printBanner(panelAddr, tunnelAddr, configPath string, rulesCount int, certE
 		fmt.Printf("║%-61s║\n", padRight(dashLabel+"http://"+panelAddr, width))
 	}
 
-	// Tunnel
+	/* Tunnel */
 	fmt.Printf("║%-61s║\n", padRight("  Tunnel:     tls://"+tunnelAddr, width))
 
-	// Config
+	/* Config */
 	fmt.Printf("║%-61s║\n", padRight("  Config:     "+configPath, width))
 
 	fmt.Println("╠═════════════════════════════════════════════════════════════╣")
 
-	// Rules
+	/* Rules */
 	if rulesCount > 0 {
 		fmt.Printf("║%-61s║\n", padRight(fmt.Sprintf("  Rules:      %d mapping rule(s) loaded", rulesCount), width))
 	} else {
 		fmt.Printf("║%-61s║\n", padRight("  Rules:      No rules loaded", width))
 	}
 
-	// TLS
+	/* TLS */
 	fmt.Printf("║%-61s║\n", padRight("  TLS:        Cert valid until "+certExpiry.Format("2006-01-02"), width))
 
 	fmt.Println("╚═════════════════════════════════════════════════════════════╝")

@@ -14,7 +14,7 @@ import (
 const Version = "1.0.0"
 
 func main() {
-	configPath := flag.String("d", ".spleen-client.json", "Path to configuration file")
+	configPath := flag.String("d", "client-config.json", "Path to configuration file")
 	version := flag.Bool("version", false, "Show version information")
 
 	/* Flags for Quick-Join mode */
@@ -37,16 +37,7 @@ func main() {
 	if *serverFlag != "" && *tokenFlag != "" {
 		serverAddr = *serverFlag
 		token = *tokenFlag
-
-		/* Persist ClientID for Quick-Join mode */
-		var idErr error
-		clientID, idErr = getOrGenerateClientID()
-		if idErr != nil {
-			fmt.Printf("[WARN] Failed to persist ClientID: %v\n", idErr)
-			clientID = util.GenerateUUID()
-		}
-
-		poolSize = 10
+		poolSize = 128
 	} else {
 		/* Load from config file. */
 		serverAddr, clientID, token, poolSize, err = LoadClientConfig(*configPath)
@@ -57,6 +48,16 @@ func main() {
 			fmt.Println("  ./spleen-client -server <IP:Port> -token <Secret>")
 			fmt.Println()
 			os.Exit(1)
+		}
+	}
+
+	/* Fallback: If ClientID is still empty, generate or load from data/ */
+	if clientID == "" {
+		var idErr error
+		clientID, idErr = getOrGenerateClientID()
+		if idErr != nil {
+			fmt.Printf("[WARN] Failed to persist ClientID: %v\n", idErr)
+			clientID = util.GenerateUUID()
 		}
 	}
 

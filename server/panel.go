@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
@@ -14,20 +12,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-/* PanelConfig stores web panel configuration. */
+/* Stores web panel configuration. */
 type PanelConfig struct {
 	ListenAddress string `json:"dashboard_addr"`
 	Username      string `json:"dashboard_user"`
-	Password      string `json:"dashboard_pwd"` /* salt$sha256 */
+	Password      string `json:"dashboard_pwd"`
 }
 
-/* MappingRule represents one public-to-private mapping. */
+/* Represents one public-to-private mapping. */
 type MappingRule struct {
 	ID         string `json:"id"`
 	ClientID   string `json:"client_id"`
@@ -36,7 +33,7 @@ type MappingRule struct {
 	Remark     string `json:"remark"`
 }
 
-/* DataStore holds persistent panel state. */
+/* Holds persistent panel state. */
 type DataStore struct {
 	Panel               PanelConfig   `json:"panel"`
 	TunnelListenAddress string        `json:"tunnel_listen_address"`
@@ -47,20 +44,20 @@ type DataStore struct {
 	filePath string
 }
 
-/* Session represents an authenticated web session. */
+/* Represents an authenticated web session. */
 type Session struct {
 	Token     string
 	ExpiresAt time.Time
 }
 
-/* loginGuardState tracks failed login attempts. */
+/* Tracks failed login attempts. */
 type loginGuardState struct {
 	WindowStart time.Time
 	FailedCount int
 	BanUntil    time.Time
 }
 
-/* WebPanel serves APIs and embedded static pages. */
+/* Serves APIs and embedded static pages. */
 type WebPanel struct {
 	data       *DataStore
 	tunnel     *TunnelManager
@@ -69,6 +66,8 @@ type WebPanel struct {
 	startTime  time.Time
 	loginMu    sync.Mutex
 	loginGuard map[string]*loginGuardState
+	geoCache   map[string]string
+	geoMu      sync.RWMutex
 }
 
 func NewWebPanel(dataPath string) (*WebPanel, error) {
@@ -77,6 +76,7 @@ func NewWebPanel(dataPath string) (*WebPanel, error) {
 		Panel: PanelConfig{
 			ListenAddress: "0.0.0.0:54321",
 			Username:      "admin",
+			Password:      "admin",
 		},
 		TunnelListenAddress: "0.0.0.0:5432",
 		MappingRules:        []MappingRule{},
@@ -88,28 +88,17 @@ func NewWebPanel(dataPath string) (*WebPanel, error) {
 		}
 	} else if os.IsNotExist(err) {
 		/* Config file not found, create default. */
-		log.Printf("[INIT] Config file missing, creating default: %s", dataPath)
+		log.Printf("[INIT] Config file missing, using defaults")
 	} else {
 		return nil, fmt.Errorf("failed to read configuration file: %w", err)
 	}
 
-	if data.Panel.Password == "" {
-		/* Default password is 'admin', user should change it in config file */
-		data.Panel.Password = hashPassword("admin")
-		log.Printf("[INIT] Initialized admin account with default password (admin) - please change in config file")
-	} else if !strings.Contains(data.Panel.Password, "$") {
-		/* If password is plaintext (no '$'), hash it and save. */
-		log.Printf("[INIT] Detected plaintext password in config, encrypting it...")
-		data.Panel.Password = hashPassword(data.Panel.Password)
-	}
 	wp := &WebPanel{
 		data:       data,
 		sessions:   make(map[string]*Session),
 		startTime:  time.Now(),
 		loginGuard: make(map[string]*loginGuardState),
-	}
-	if err := wp.data.Save(); err != nil {
-		return nil, fmt.Errorf("failed to save configuration file: %w", err)
+		geoCache:   make(map[string]string),
 	}
 	return wp, nil
 }
@@ -173,12 +162,12 @@ func (wp *WebPanel) GetPanelListenAddress() string {
 	return wp.data.Panel.ListenAddress
 }
 
-/* Start starts the web panel HTTP server. */
+/* Starts the web panel HTTP server. */
 func (wp *WebPanel) Start() error {
 	return wp.StartWithTLS(nil, "", "")
 }
 
-/* StartWithTLS starts the web panel with optional HTTPS. */
+/* Starts the web panel with optional HTTPS. */
 func (wp *WebPanel) StartWithTLS(tlsConfig *tls.Config, certFile, keyFile string) error {
 	mux := http.NewServeMux()
 
@@ -192,9 +181,11 @@ func (wp *WebPanel) StartWithTLS(tlsConfig *tls.Config, certFile, keyFile string
 	mux.HandleFunc("/api/servers", wp.authMiddleware(wp.handleServers))
 	mux.HandleFunc("/api/mapping_rules", wp.authMiddleware(wp.handleMappingRules))
 	mux.HandleFunc("/api/security", wp.authMiddleware(wp.handleSecurity))
+	mux.HandleFunc("/api/history", wp.authMiddleware(wp.handleHistory))
 
 	addr := wp.GetPanelListenAddress()
 	go wp.sessionAndGuardSweepLoop()
+	go wp.geoIPWorker()
 
 	if tlsConfig != nil && certFile != "" && keyFile != "" {
 		return http.ListenAndServeTLS(addr, certFile, keyFile, mux)
@@ -259,7 +250,7 @@ func (wp *WebPanel) handleLogin(w http.ResponseWriter, r *http.Request) {
 	storedPassword := wp.data.Panel.Password
 
 	if subtle.ConstantTimeCompare([]byte(req.Username), []byte(username)) != 1 ||
-		!verifyPassword(req.Password, storedPassword) {
+		subtle.ConstantTimeCompare([]byte(req.Password), []byte(storedPassword)) != 1 {
 		wp.recordLoginFailure(clientIP)
 		jsonError(w, "用户名或密码错误", http.StatusUnauthorized)
 		return
@@ -454,6 +445,107 @@ func (wp *WebPanel) handleSecurity(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (wp *WebPanel) handleHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "方法不允许", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if wp.tunnel == nil {
+		jsonResponse(w, []interface{}{})
+		return
+	}
+
+	history := wp.tunnel.GetPublicHistory()
+	/* Format time for display. */
+	type DisplayRecord struct {
+		Time     string `json:"time"`
+		IP       string `json:"ip"`
+		Location string `json:"location"`
+		RuleID   string `json:"rule_id"`
+		Public   string `json:"public"`
+		Target   string `json:"target"`
+		Status   bool   `json:"status"`
+	}
+
+	display := make([]DisplayRecord, len(history))
+	for i, h := range history {
+		display[i] = DisplayRecord{
+			Time:     h.Time.Format("01-02 15:04:05"),
+			IP:       h.IP,
+			Location: h.Location,
+			RuleID:   h.RuleID,
+			Public:   fmt.Sprintf(":%d", h.PublicPort),
+			Target:   fmt.Sprintf(":%d", h.TargetPort),
+			Status:   h.Success,
+		}
+	}
+
+	jsonResponse(w, display)
+}
+
+func (wp *WebPanel) geoIPWorker() {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		if wp.tunnel == nil {
+			continue
+		}
+		history := wp.tunnel.GetPublicHistory()
+		for _, h := range history {
+			if h.Location == "Checking..." || h.Location == "" {
+				loc := wp.resolveGeoIP(h.IP)
+				if loc != "" {
+					wp.tunnel.UpdateLocation(h.IP, loc)
+				}
+			}
+		}
+	}
+}
+
+func (wp *WebPanel) resolveGeoIP(ip string) string {
+	if ip == "127.0.0.1" || ip == "localhost" || strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "10.") {
+		return "局域网"
+	}
+
+	wp.geoMu.RLock()
+	loc, ok := wp.geoCache[ip]
+	wp.geoMu.RUnlock()
+	if ok {
+		return loc
+	}
+
+	/* Fetch from API. */
+	client := http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?lang=zh-CN", ip))
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Status  string `json:"status"`
+		Country string `json:"country"`
+		Region  string `json:"regionName"`
+		City    string `json:"city"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+
+	if result.Status != "success" {
+		return "未知"
+	}
+
+	finalLoc := fmt.Sprintf("%s %s %s", result.Country, result.Region, result.City)
+	finalLoc = strings.TrimSpace(finalLoc)
+
+	wp.geoMu.Lock()
+	wp.geoCache[ip] = finalLoc
+	wp.geoMu.Unlock()
+	return finalLoc
+}
+
 func (wp *WebPanel) sessionAndGuardSweepLoop() {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
@@ -516,43 +608,6 @@ func (wp *WebPanel) clearLoginFailures(ip string) {
 }
 
 /* Utility functions */
-func hashPassword(password string) string {
-	const iterations = 120000
-	salt := make([]byte, 16)
-	_, _ = rand.Read(salt)
-	derived := pbkdf2SHA256([]byte(password), salt, iterations, 32)
-	return "pbkdf2$" + strconv.Itoa(iterations) + "$" + hex.EncodeToString(salt) + "$" + hex.EncodeToString(derived)
-}
-
-func verifyPassword(password, storedHash string) bool {
-	parts := strings.Split(storedHash, "$")
-	if len(parts) == 4 && parts[0] == "pbkdf2" {
-		iterations, err := strconv.Atoi(parts[1])
-		if err != nil || iterations <= 0 {
-			return false
-		}
-		salt, err := hex.DecodeString(parts[2])
-		if err != nil {
-			return false
-		}
-		expected, err := hex.DecodeString(parts[3])
-		if err != nil {
-			return false
-		}
-		derived := pbkdf2SHA256([]byte(password), salt, iterations, len(expected))
-		return subtle.ConstantTimeCompare(derived, expected) == 1
-	}
-
-	/* Backward-compatible fallback: salt$sha256 */
-	legacy := strings.SplitN(storedHash, "$", 2)
-	if len(legacy) != 2 {
-		return false
-	}
-	salt, hash := legacy[0], legacy[1]
-	h := sha256.Sum256([]byte(salt + password))
-	expected := hex.EncodeToString(h[:])
-	return subtle.ConstantTimeCompare([]byte(expected), []byte(hash)) == 1
-}
 
 func generateToken(length int) string {
 	b := make([]byte, length)
@@ -598,41 +653,6 @@ func jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
-}
-
-func pbkdf2SHA256(password, salt []byte, iterations, keyLen int) []byte {
-	hLen := 32
-	blockCount := (keyLen + hLen - 1) / hLen
-	derived := make([]byte, 0, blockCount*hLen)
-	for block := 1; block <= blockCount; block++ {
-		u := pbkdf2Block(password, salt, iterations, block)
-		derived = append(derived, u...)
-	}
-	return derived[:keyLen]
-}
-
-func pbkdf2Block(password, salt []byte, iterations, blockNum int) []byte {
-	b := make([]byte, len(salt)+4)
-	copy(b, salt)
-	b[len(salt)] = byte(blockNum >> 24)
-	b[len(salt)+1] = byte(blockNum >> 16)
-	b[len(salt)+2] = byte(blockNum >> 8)
-	b[len(salt)+3] = byte(blockNum)
-
-	h := hmac.New(sha256.New, password)
-	_, _ = h.Write(b)
-	u := h.Sum(nil)
-	t := make([]byte, len(u))
-	copy(t, u)
-	for i := 1; i < iterations; i++ {
-		h = hmac.New(sha256.New, password)
-		_, _ = h.Write(u)
-		u = h.Sum(nil)
-		for j := range t {
-			t[j] ^= u[j]
-		}
-	}
-	return t
 }
 
 func shortUUID(v string) string {

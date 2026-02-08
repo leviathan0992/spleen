@@ -12,9 +12,11 @@ Spleen focuses on a streamlined configuration workflow and multi-layered securit
 *   **Fingerprint Pinning (TOFU)**: Implements a Trust-On-First-Use mechanism to pin server identities, neutralizing Man-in-the-Middle threats.
 *   **Full-Chain Encryption**: Enforces TLS 1.2/1.3 for all tunnel traffic to ensure absolute privacy.
 *   **Authentication Mechanism**: Uses a Nonce-based challenge-response protocol to prevent replay attacks.
-*   **Read-Only Dashboard**: Integrated monitoring UI with a secure read-only design. Configuration changes are made via files (requires service restart to take effect).
+*   **Read-Only Dashboard**: Integrated monitoring of connection status, traffic stats, and **all connection attempts (with GeoIP and Success/Failure auditing)**.
+*   **GeoIP Identification**: Automatic visitor location detection, supporting LAN IP recognition.
+*   **Fail Audit**: Automatically records and displays all failed public access attempts to help identify potential scanning and brute-force attacks.
 *   **Transparent Configuration**: Supports one-click generation of paired JSON configuration files.
-*   **Anti-DDoS & Resource Protection**: Built-in connection rate limiting and payload size validation to mitigate memory amplification risks and brute-force attacks.
+*   **Anti-DDoS & Resource Protection**: Built-in rate limiting and message length validation to mitigate memory amplification risks and attacks.
 
 ---
 
@@ -155,3 +157,21 @@ The "One Token" architecture makes it easy to scale horizontally:
 
 ## License
 [Apache License 2.0](LICENSE)
+
+---
+
+## Security Strategies
+
+Spleen employs multi-layer security to protect your internal resources:
+
+1.  **Tunnel Protection (Auth Guard)**:
+    -   If a client IP fails authentication 8 consecutive times (wrong Token or Nonce replay), the server will **ban that IP for 20 minutes**.
+    -   During this period, all handshake requests from that IP are rejected immediately.
+
+2.  **Public Port Protection**:
+    -   **Timeout Mechanism**: If a connection is made but no internal tunnel is available, the server actively disconnects after 5 seconds.
+    -   **Failure Audit**: All failed connection attempts (timeouts, empty pools, etc.) are logged in real-time on the dashboard for manual intervention.
+
+3.  **Zero-Trust Access**:
+    -   Clients without a valid Token and registered ClientID cannot establish any tunnels.
+    -   Uses TOFU to pin the server certificate and prevent man-in-the-middle attacks.

@@ -25,7 +25,7 @@ func Transfer(src io.Reader, dst io.Writer) error {
 	return err
 }
 
-/* TransferCount copies bytes and returns copied size. */
+/* Copies bytes and returns copied size. */
 func TransferCount(src io.Reader, dst io.Writer) (int64, error) {
 	bufPtr := bytePool.Get().(*[]byte)
 	defer bytePool.Put(bufPtr)
@@ -34,7 +34,7 @@ func TransferCount(src io.Reader, dst io.Writer) (int64, error) {
 	return n, err
 }
 
-/* ReadLineLimited reads a newline-terminated frame with a strict size limit. */
+/* Reads a newline-terminated frame with a strict size limit. */
 func ReadLineLimited(reader *bufio.Reader, maxBytes int) ([]byte, error) {
 	if maxBytes <= 0 {
 		maxBytes = 4096

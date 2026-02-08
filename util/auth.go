@@ -20,7 +20,7 @@ type AuthMessage struct {
 
 var uuidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-/* NormalizeUUID returns canonical lowercase UUID text. */
+/* Returns canonical lowercase UUID text. */
 func NormalizeUUID(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }

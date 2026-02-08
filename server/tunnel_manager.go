@@ -15,7 +15,7 @@ import (
 	"github.com/leviathan0992/spleen/util"
 )
 
-/* TunnelManager manages all tunnel connections and public port mappings. */
+/* Manages all tunnel connections and public port mappings. */
 type TunnelManager struct {
 	listenAddr  string
 	tlsConfig   *tls.Config
@@ -31,6 +31,9 @@ type TunnelManager struct {
 	authGuard     map[string]*authGuardState
 	authGuardMu   sync.Mutex
 
+	connGuard   map[string]int /* ip -> active connection count */
+	connGuardMu sync.Mutex
+
 	stats struct {
 		sync.RWMutex
 		accepted    map[string]int64 /* clientID -> count */
@@ -40,16 +43,30 @@ type TunnelManager struct {
 		activeConns map[string]int64
 		errors      map[string][]ErrorRecord
 	}
+
+	historyMu     sync.RWMutex
+	publicHistory []ConnRecord
 }
 
-/* authGuardState tracks failed tunnel authentications per source IP. */
+/* Represents a successful public connection. */
+type ConnRecord struct {
+	Time       time.Time `json:"time"`
+	IP         string    `json:"ip"`
+	Location   string    `json:"location"`
+	RuleID     string    `json:"rule_id"`
+	PublicPort int       `json:"public_port"`
+	TargetPort int       `json:"target_port"`
+	Success    bool      `json:"success"`
+}
+
+/* Tracks failed tunnel authentications per source IP. */
 type authGuardState struct {
 	WindowStart time.Time
 	FailedCount int
 	BanUntil    time.Time
 }
 
-/* ClientState represents the current state of a connected client. */
+/* Represents the current state of a connected client. */
 type ClientState struct {
 	ClientID    string    `json:"client_id"`
 	Version     string    `json:"version"`
@@ -61,13 +78,13 @@ type ClientState struct {
 	BytesOut    int64     `json:"bytes_out"`
 }
 
-/* ErrorRecord stores error information for debugging. */
+/* Stores error information for debugging. */
 type ErrorRecord struct {
 	Time    time.Time `json:"time"`
 	Message string    `json:"message"`
 }
 
-/* NewTunnelManager creates a new tunnel manager. */
+/* Creates a new tunnel manager. */
 func NewTunnelManager(listenAddr string, tlsConfig *tls.Config, globalToken string) *TunnelManager {
 	m := &TunnelManager{
 		listenAddr:    listenAddr,
@@ -78,6 +95,7 @@ func NewTunnelManager(listenAddr string, tlsConfig *tls.Config, globalToken stri
 		mappingRules:  make(map[string]*MappingRule),
 		portListeners: make(map[int]net.Listener),
 		authGuard:     make(map[string]*authGuardState),
+		connGuard:     make(map[string]int),
 		listenFunc:    net.Listen,
 	}
 	m.stats.accepted = make(map[string]int64)
@@ -89,7 +107,7 @@ func NewTunnelManager(listenAddr string, tlsConfig *tls.Config, globalToken stri
 	return m
 }
 
-/* Start starts the tunnel server listener. */
+/* Starts the tunnel server listener. */
 func (m *TunnelManager) Start() error {
 	listener, err := tls.Listen("tcp", m.listenAddr, m.tlsConfig)
 	if err != nil {
@@ -111,7 +129,7 @@ func (m *TunnelManager) Start() error {
 	}
 }
 
-/* handleClientConn processes a new server connection. */
+/* Processes a new server connection. */
 func (m *TunnelManager) handleClientConn(conn net.Conn) {
 	closeOnReturn := true
 	remoteIP := remoteHost(conn.RemoteAddr())
@@ -212,12 +230,13 @@ func (m *TunnelManager) handleClientConn(conn net.Conn) {
 		closeOnReturn = false
 		m.adjustIdleTunnels(authMsg.ClientID, 1)
 	case <-time.After(10 * time.Second):
+		log.Printf("[WARN] Tunnel connection pool full for client %s", authMsg.ClientID[:8])
 		m.recordServerError(authMsg.ClientID, "connection pool full", true)
 		m.recordAuthFailure(remoteIP)
 	}
 }
 
-/* ApplyMappingRules applies mapping rules from config. */
+/* Applies mapping rules from config. */
 func (m *TunnelManager) ApplyMappingRules(rules []MappingRule) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -228,11 +247,13 @@ func (m *TunnelManager) ApplyMappingRules(rules []MappingRule) error {
 	for i := range rules {
 		ruleCopy := rules[i]
 		if ruleCopy.ID == "" {
-			return fmt.Errorf("rule id cannot be empty")
+			log.Printf("[WARN] Skipping rule: ID cannot be empty (index %d)", i)
+			continue
 		}
 		ruleCopy.ClientID = util.NormalizeUUID(ruleCopy.ClientID)
 		if !util.IsValidUUID(ruleCopy.ClientID) {
-			return fmt.Errorf("invalid client_id in rule %s", ruleCopy.ID)
+			log.Printf("[WARN] Skipping rule %s: invalid client_id %q", ruleCopy.ID, ruleCopy.ClientID)
+			continue
 		}
 		nextRules[ruleCopy.ID] = &ruleCopy
 		nextPorts[ruleCopy.PublicPort] = struct{}{}
@@ -255,7 +276,7 @@ func (m *TunnelManager) ApplyMappingRules(rules []MappingRule) error {
 	return nil
 }
 
-/* startRuleListener starts a listener for a mapping rule if not already exists. */
+/* Starts a listener for a mapping rule if not already exists. */
 func (m *TunnelManager) startRuleListener(rule *MappingRule) error {
 	if _, exists := m.portListeners[rule.PublicPort]; exists {
 		return nil
@@ -265,7 +286,7 @@ func (m *TunnelManager) startRuleListener(rule *MappingRule) error {
 		return fmt.Errorf("failed to listen on port %d: %w", rule.PublicPort, err)
 	}
 	m.portListeners[rule.PublicPort] = listener
-	go m.acceptPublicConns(listener, rule.ClientID, rule.TargetPort)
+	go m.acceptPublicConns(listener, rule.ClientID, rule.PublicPort, rule.TargetPort)
 	log.Printf("[INFO] Mapping assigned: :%d -> :%d (UUID: %s)", rule.PublicPort, rule.TargetPort, util.NormalizeUUID(rule.ClientID)[:8])
 	return nil
 }
@@ -278,23 +299,43 @@ func (m *TunnelManager) SetListenerFactory(factory func(network, address string)
 	m.listenFunc = factory
 }
 
-/* acceptPublicConns accepts connections on a public port. */
-func (m *TunnelManager) acceptPublicConns(listener net.Listener, serverID string, targetPort int) {
+/* Accepts connections on a public port. */
+func (m *TunnelManager) acceptPublicConns(listener net.Listener, serverID string, publicPort, targetPort int) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				continue
 			}
+			log.Printf("[ERROR] Public listener accept failed: %v", err)
 			return
 		}
-		go m.handlePublicConn(conn, serverID, targetPort)
+		go m.handlePublicConn(conn, serverID, publicPort, targetPort)
 	}
 }
 
-/* handlePublicConn handles a connection from the public internet. */
-func (m *TunnelManager) handlePublicConn(publicConn net.Conn, serverID string, targetPort int) {
+/* Handles a connection from the public internet. */
+func (m *TunnelManager) handlePublicConn(publicConn net.Conn, serverID string, publicPort, targetPort int) {
 	defer publicConn.Close()
+
+	remoteIP := remoteHost(publicConn.RemoteAddr())
+	m.connGuardMu.Lock()
+	if m.connGuard[remoteIP] >= 8 {
+		m.connGuardMu.Unlock()
+		m.recordServerError(serverID, fmt.Sprintf("too many connections from %s", remoteIP), true)
+		return
+	}
+	m.connGuard[remoteIP]++
+	m.connGuardMu.Unlock()
+
+	defer func() {
+		m.connGuardMu.Lock()
+		m.connGuard[remoteIP]--
+		if m.connGuard[remoteIP] <= 0 {
+			delete(m.connGuard, remoteIP)
+		}
+		m.connGuardMu.Unlock()
+	}()
 
 	m.mu.RLock()
 	pool, ok := m.clientPools[serverID]
@@ -309,10 +350,12 @@ func (m *TunnelManager) handlePublicConn(publicConn net.Conn, serverID string, t
 		m.adjustIdleTunnels(serverID, -1)
 	case <-time.After(5 * time.Second):
 		m.recordServerError(serverID, "timeout obtaining tunnel connection", false)
+		m.AddPublicConnHistory(remoteHost(publicConn.RemoteAddr()), serverID, publicPort, targetPort, false)
 		return
 	}
 
 	if tunnelConn == nil {
+		m.AddPublicConnHistory(remoteHost(publicConn.RemoteAddr()), serverID, publicPort, targetPort, false)
 		return
 	}
 	defer tunnelConn.Close()
@@ -320,8 +363,12 @@ func (m *TunnelManager) handlePublicConn(publicConn net.Conn, serverID string, t
 	targetMsg := map[string]interface{}{"type": "forward", "target_port": targetPort}
 	targetBytes, _ := json.Marshal(targetMsg)
 	if _, err := tunnelConn.Write(append(targetBytes, '\n')); err != nil {
+		log.Printf("[ERROR] Failed to write forward request to tunnel: %v", err)
 		return
 	}
+
+	/* Record success in history after handshake. */
+	m.AddPublicConnHistory(remoteHost(publicConn.RemoteAddr()), serverID, publicPort, targetPort, true)
 
 	m.adjustActiveConns(serverID, 1)
 	defer m.adjustActiveConns(serverID, -1)
@@ -340,7 +387,7 @@ func (m *TunnelManager) handlePublicConn(publicConn net.Conn, serverID string, t
 	<-errCh
 }
 
-/* markServerSeen updates server last seen time. */
+/* Updates server last seen time. */
 func (m *TunnelManager) markServerSeen(serverID, version string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -354,7 +401,7 @@ func (m *TunnelManager) markServerSeen(serverID, version string) {
 	state.Online = true
 }
 
-/* adjustIdleTunnels adjusts the idle tunnel count. */
+/* Adjusts the idle tunnel count. */
 func (m *TunnelManager) adjustIdleTunnels(serverID string, delta int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -366,35 +413,35 @@ func (m *TunnelManager) adjustIdleTunnels(serverID string, delta int) {
 	}
 }
 
-/* adjustActiveConns adjusts the active connection count. */
+/* Adjusts the active connection count. */
 func (m *TunnelManager) adjustActiveConns(serverID string, delta int64) {
 	m.stats.Lock()
 	defer m.stats.Unlock()
 	m.stats.activeConns[serverID] += delta
 }
 
-/* addBytesIn adds bytes received count. */
+/* Adds bytes received count. */
 func (m *TunnelManager) addBytesIn(serverID string, n int64) {
 	m.stats.Lock()
 	defer m.stats.Unlock()
 	m.stats.bytesIn[serverID] += n
 }
 
-/* addBytesOut adds bytes sent count. */
+/* Adds bytes sent count. */
 func (m *TunnelManager) addBytesOut(serverID string, n int64) {
 	m.stats.Lock()
 	defer m.stats.Unlock()
 	m.stats.bytesOut[serverID] += n
 }
 
-/* recordAcceptedTunnel records a successful tunnel connection. */
+/* Records a successful tunnel connection. */
 func (m *TunnelManager) recordAcceptedTunnel(serverID string) {
 	m.stats.Lock()
 	defer m.stats.Unlock()
 	m.stats.accepted[serverID]++
 }
 
-/* recordServerError records an error for a server. */
+/* Records an error for a server. */
 func (m *TunnelManager) recordServerError(serverID, message string, isRejection bool) {
 	m.stats.Lock()
 	defer m.stats.Unlock()
@@ -409,13 +456,20 @@ func (m *TunnelManager) recordServerError(serverID, message string, isRejection 
 	m.stats.errors[serverID] = errs
 }
 
-/* cleanupLoop periodically cleans up stale connections. */
+/* Periodically cleans up stale connections. */
 func (m *TunnelManager) cleanupLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
-		m.mu.Lock()
-		for serverID, pool := range m.clientPools {
+		/* Snapshot pools to avoid holding lock during IO. */
+		m.mu.RLock()
+		pools := make(map[string]chan net.Conn, len(m.clientPools))
+		for k, v := range m.clientPools {
+			pools[k] = v
+		}
+		m.mu.RUnlock()
+
+		for serverID, pool := range pools {
 			currentLen := len(pool)
 			for i := 0; i < currentLen; i++ {
 				select {
@@ -426,34 +480,40 @@ func (m *TunnelManager) cleanupLoop() {
 					_ = conn.SetReadDeadline(time.Time{})
 
 					if err == nil {
+						/* Unexpected data: treat as broken/dirty. */
 						_ = conn.Close()
-						if state, ok := m.clientStates[serverID]; ok && state.TunnelCount > 0 {
-							state.TunnelCount--
-						}
+						m.decrementTunnelCount(serverID)
 					} else if err != io.EOF {
+						/* Timeout/No data: connection is healthy (idle). */
 						select {
 						case pool <- conn:
 						default:
+							/* Pool fulled up in meantime? Should not happen logically but handle it. */
 							_ = conn.Close()
-							if state, ok := m.clientStates[serverID]; ok && state.TunnelCount > 0 {
-								state.TunnelCount--
-							}
+							m.decrementTunnelCount(serverID)
 						}
 					} else {
+						/* EOF: Connection closed. */
 						_ = conn.Close()
-						if state, ok := m.clientStates[serverID]; ok && state.TunnelCount > 0 {
-							state.TunnelCount--
-						}
+						m.decrementTunnelCount(serverID)
 					}
 				default:
+					/* Pool empty, move to next. */
 				}
 			}
 		}
-		m.mu.Unlock()
 	}
 }
 
-/* heartbeatCheck marks servers as offline if not seen recently. */
+func (m *TunnelManager) decrementTunnelCount(serverID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state, ok := m.clientStates[serverID]; ok && state.TunnelCount > 0 {
+		state.TunnelCount--
+	}
+}
+
+/* Marks servers as offline if not seen recently. */
 func (m *TunnelManager) heartbeatCheck() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -468,7 +528,7 @@ func (m *TunnelManager) heartbeatCheck() {
 	}
 }
 
-/* SnapshotServers returns a snapshot of all server states. */
+/* Returns a snapshot of all server states. */
 func (m *TunnelManager) SnapshotServers() []ClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -487,7 +547,7 @@ func (m *TunnelManager) SnapshotServers() []ClientState {
 	return result
 }
 
-/* GetStats returns tunnel statistics. */
+/* Returns tunnel statistics. */
 func (m *TunnelManager) GetStats() map[string]interface{} {
 	m.stats.RLock()
 	defer m.stats.RUnlock()
@@ -598,4 +658,59 @@ func remoteHost(addr net.Addr) string {
 		return addr.String()
 	}
 	return host
+}
+
+/* Adds a connection record to the history. */
+func (m *TunnelManager) AddPublicConnHistory(ip, clientID string, publicPort, targetPort int, success bool) {
+	m.mu.RLock()
+	var ruleID string
+	for _, rule := range m.mappingRules {
+		if rule.ClientID == clientID && rule.TargetPort == targetPort && rule.PublicPort == publicPort {
+			ruleID = rule.ID
+			break
+		}
+	}
+	m.mu.RUnlock()
+
+	record := ConnRecord{
+		Time:       time.Now(),
+		IP:         ip,
+		RuleID:     ruleID,
+		PublicPort: publicPort,
+		TargetPort: targetPort,
+		Success:    success,
+		Location:   "Checking...",
+	}
+
+	m.historyMu.Lock()
+	m.publicHistory = append(m.publicHistory, record)
+	if len(m.publicHistory) > 100 {
+		m.publicHistory = m.publicHistory[len(m.publicHistory)-100:]
+	}
+	m.historyMu.Unlock()
+}
+
+/* Returns the recent connection history. */
+func (m *TunnelManager) GetPublicHistory() []ConnRecord {
+	m.historyMu.RLock()
+	defer m.historyMu.RUnlock()
+	out := make([]ConnRecord, len(m.publicHistory))
+	copy(out, m.publicHistory)
+	/* Reverse for dashboard display (newest first). */
+	for i := 0; i < len(out)/2; i++ {
+		j := len(out) - 1 - i
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+/* Updates the location for records with a specific IP. */
+func (m *TunnelManager) UpdateLocation(ip, location string) {
+	m.historyMu.Lock()
+	defer m.historyMu.Unlock()
+	for i := range m.publicHistory {
+		if m.publicHistory[i].IP == ip && (m.publicHistory[i].Location == "" || m.publicHistory[i].Location == "Checking...") {
+			m.publicHistory[i].Location = location
+		}
+	}
 }

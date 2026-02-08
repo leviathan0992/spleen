@@ -29,3 +29,5 @@ data/
 # Logs
 *.log
 tags
+
+setup.sh

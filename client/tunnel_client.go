@@ -15,7 +15,7 @@ import (
 	"github.com/leviathan0992/spleen/util"
 )
 
-/* TunnelClient maintains connections to the tunnel server. */
+/* Maintains connections to the tunnel server. */
 type TunnelClient struct {
 	serverAddr string
 	clientID   string
@@ -28,7 +28,7 @@ type TunnelClient struct {
 	peerFingerprint string
 }
 
-/* NewTunnelClient creates a new tunnel client. */
+/* Creates a new tunnel client. */
 func NewTunnelClient(serverAddr, clientID, token string, poolSize int) *TunnelClient {
 	c := &TunnelClient{
 		serverAddr: serverAddr,
@@ -47,7 +47,7 @@ func NewTunnelClient(serverAddr, clientID, token string, poolSize int) *TunnelCl
 	return c
 }
 
-/* Run starts tunnel maintenance and heartbeat loops. */
+/* Starts tunnel maintenance and heartbeat loops. */
 func (c *TunnelClient) Run() {
 	go c.heartbeatLoop()
 
@@ -57,7 +57,7 @@ func (c *TunnelClient) Run() {
 	}
 }
 
-/* maintainPool ensures we have enough tunnels in the pool. */
+/* Ensures we have enough tunnels in the pool. */
 func (c *TunnelClient) maintainPool() {
 	c.mu.Lock()
 	needed := c.poolSize - c.activeTunnels
@@ -68,7 +68,7 @@ func (c *TunnelClient) maintainPool() {
 	}
 }
 
-/* createTunnel creates a single tunnel connection. */
+/* Creates a single tunnel connection. */
 func (c *TunnelClient) createTunnel() {
 	c.mu.Lock()
 	c.activeTunnels++
@@ -131,9 +131,12 @@ func (c *TunnelClient) createTunnel() {
 	<-errCh
 }
 
-/* dialTunnelServer establishes a TLS connection and authenticates. */
+/* Establishes a TLS connection and authenticates. */
 func (c *TunnelClient) dialTunnelServer() (*tls.Conn, error) {
-	conn, err := tls.Dial("tcp", c.serverAddr, c.tlsConfig)
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
+	conn, err := tls.DialWithDialer(dialer, "tcp", c.serverAddr, c.tlsConfig)
 	if err != nil {
 		return nil, fmt.Errorf("TLS connection failed: %w", err)
 	}
@@ -147,18 +150,26 @@ func (c *TunnelClient) dialTunnelServer() (*tls.Conn, error) {
 	}
 
 	var challenge struct {
-		Type  string `json:"type"`
-		Nonce string `json:"nonce"`
+		Type    string `json:"type"`
+		Nonce   string `json:"nonce"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
 	}
 	if err := json.Unmarshal(challengeLine, &challenge); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to parse challenge: %w", err)
 	}
 
+	/* Check for immediate server-side rejections (e.g. IP ban). */
+	if challenge.Status == "error" {
+		conn.Close()
+		return nil, fmt.Errorf("server rejected connection: %s", challenge.Message)
+	}
+
 	/* Send auth response. */
 	if challenge.Type != "challenge" || challenge.Nonce == "" {
 		conn.Close()
-		return nil, fmt.Errorf("invalid challenge from server")
+		return nil, fmt.Errorf("invalid challenge from server (got %q)", string(challengeLine))
 	}
 	proof := util.BuildTokenProof(c.token, c.clientID, "tunnel", challenge.Nonce)
 
@@ -202,7 +213,7 @@ func (c *TunnelClient) dialTunnelServer() (*tls.Conn, error) {
 	return conn, nil
 }
 
-/* verifyPeerFingerprint verifies the server's certificate fingerprint (TOFU with persistence). */
+/* Verifies the server's certificate fingerprint (TOFU with persistence). */
 func (c *TunnelClient) verifyPeerFingerprint(cs tls.ConnectionState) error {
 	if len(cs.PeerCertificates) == 0 {
 		return fmt.Errorf("server provided no certificates")
@@ -248,7 +259,7 @@ func (c *TunnelClient) verifyPeerFingerprint(cs tls.ConnectionState) error {
 	return nil
 }
 
-/* heartbeatLoop sends periodic heartbeats. */
+/* Sends periodic heartbeats. */
 func (c *TunnelClient) heartbeatLoop() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -260,7 +271,7 @@ func (c *TunnelClient) heartbeatLoop() {
 	}
 }
 
-/* sendHeartbeat sends a heartbeat to the server. */
+/* Sends a heartbeat to the server. */
 func (c *TunnelClient) sendHeartbeat() error {
 	conn, err := tls.Dial("tcp", c.serverAddr, c.tlsConfig)
 	if err != nil {
@@ -320,7 +331,7 @@ func (c *TunnelClient) sendHeartbeat() error {
 	return nil
 }
 
-/* LoadClientConfig loads client configuration from a JSON file. */
+/* Loads client configuration from a JSON file. */
 func LoadClientConfig(path string) (serverAddr, clientID, token string, poolSize int, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -339,7 +350,7 @@ func LoadClientConfig(path string) (serverAddr, clientID, token string, poolSize
 	}
 
 	if config.PoolSize <= 0 {
-		config.PoolSize = 10
+		config.PoolSize = 128
 	}
 
 	return config.ServerAddr, util.NormalizeUUID(config.ClientID), config.Token, config.PoolSize, nil

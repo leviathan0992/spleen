@@ -1,6 +1,6 @@
 package main
 
-/* staticHTML contains the embedded web dashboard HTML. */
+/* Contains the embedded web dashboard HTML. */
 const staticHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -179,7 +179,7 @@ const staticHTML = `<!DOCTYPE html>
         
         <div class="readonly-banner">
             <div>
-                <strong>只读模式</strong>：规则管理请编辑配置文件 <code>.spleen-server.json</code> 后重启服务
+                <strong>只读模式</strong>：规则管理请编辑配置文件 <code>server-config.json</code> 后重启服务
             </div>
         </div>
 
@@ -237,6 +237,26 @@ const staticHTML = `<!DOCTYPE html>
                 <tbody id="servers-table"></tbody>
             </table>
         </div>
+
+        <div class="section">
+            <div class="section-header">
+                <span class="section-title">最近访问历史</span>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>时间</th>
+                        <th>来源 IP</th>
+                        <th>地理位置</th>
+                        <th>状态</th>
+                        <th>目标规则</th>
+                        <th>公网端口</th>
+                        <th>内网目标端口</th>
+                    </tr>
+                </thead>
+                <tbody id="history-table"></tbody>
+            </table>
+        </div>
     </div>
 
     <script>
@@ -245,7 +265,8 @@ const staticHTML = `<!DOCTYPE html>
         logout: '/api/logout',
         status: '/api/status',
         servers: '/api/servers',
-        rules: '/api/mapping_rules'
+        rules: '/api/mapping_rules',
+        history: '/api/history'
     };
 
     async function req(url, options = {}) {
@@ -322,19 +343,19 @@ const staticHTML = `<!DOCTYPE html>
 
     async function loadData() {
         try {
-            // Status
+            /* Status */
             const status = await req(API.status);
             document.getElementById('uptime').textContent = formatUptime(status.uptime);
             document.getElementById('rules-count').textContent = status.rules_count;
             document.getElementById('online-servers').textContent = status.online_servers;
             document.getElementById('security-status').textContent = status.security_summary;
 
-            // Rules (simplified: name, ports, remark only)
+            /* Rules (simplified: name, ports, remark only) */
             const rules = await req(API.rules);
             const rulesTable = document.getElementById('rules-table');
             rulesTable.innerHTML = rules.map((r, idx) => '<tr><td>' + (idx + 1) + '</td><td>' + escapeHTML(r.id||'-') + '</td><td>' + escapeHTML(r.client_id||'-') + '</td><td>' + escapeHTML(r.public_port) + '</td><td>' + escapeHTML(r.target_port) + '</td><td>' + escapeHTML(r.remark||'-') + '</td></tr>').join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary)">暂无映射规则</td></tr>';
 
-            // Servers (simplified: status, tunnel count, active conns, last seen)
+            /* Servers (simplified: status, tunnel count, active conns, last seen) */
             const servers = await req(API.servers);
             const serversTable = document.getElementById('servers-table');
             serversTable.innerHTML = (servers.servers || []).map(s => {
@@ -342,12 +363,21 @@ const staticHTML = `<!DOCTYPE html>
                 const statusText = s.online ? '在线' : '离线';
                 return '<tr><td><span class="status-badge ' + statusClass + '">' + statusText + '</span></td><td>' + escapeHTML(s.tunnel_count) + '</td><td>' + escapeHTML(s.active_conns) + '</td><td>' + escapeHTML(s.last_seen) + '</td></tr>';
             }).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-secondary)">暂无内网服务器连接</td></tr>';
+
+            /* History */
+            const history = await req(API.history);
+            const historyTable = document.getElementById('history-table');
+            historyTable.innerHTML = history.map(h => {
+                const statusClass = h.status ? 'status-online' : 'status-offline';
+                const statusText = h.status ? '成功' : '失败';
+                return '<tr><td>' + escapeHTML(h.time) + '</td><td>' + escapeHTML(h.ip) + '</td><td>' + escapeHTML(h.location) + '</td><td><span class="status-badge ' + statusClass + '">' + statusText + '</span></td><td>' + escapeHTML(h.rule_id||'-') + '</td><td>' + escapeHTML(h.public) + '</td><td>' + escapeHTML(h.target) + '</td></tr>';
+            }).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">暂无访问记录</td></tr>';
         } catch (err) {
             console.error('加载数据失败:', err);
         }
     }
 
-    // Check auth and auto-refresh
+    /* Check auth and auto-refresh */
     (async function init() {
         try {
             await req(API.status);
