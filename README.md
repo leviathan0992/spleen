@@ -1,99 +1,157 @@
-# spleen
+# Spleen: 轻量级内网穿透工具
 
-轻量级内网穿透工具, 使用 `spleen` 可以支持通过外网访问不具备公网 IP 的家庭服务器/内网主机.
+Spleen 是一款采用 Go 语言编写的反向隧道工具。它用于在复杂网络环境下, 通过 TLS 加密中转实现私有内网服务的公网暴露。该项目零外部依赖, 纯 Go 实现。
 
-## 介绍
+**典型使用场景**: 将没有公网 IP 的小型服务器（如家庭 NAS、开发机）通过一台具备公网 IP 的中转服务器暴露到外网，实现随时随地通过 SSH/HTTP 等协议访问内网资源。
 
-通过在一台具有公网 IP 的小型服务器(阿里云轻量)部署 `spleen`, 可以随时随地访问你的家庭服务器/内网主机(闲置笔记本)的 `TCP` 服务, 例如 `SSH`, `HTTP/S` 等. **`spleen`支持针对内网服务器指定服务进行流速限制.**
+## 核心功能与安全特性
 
-例如 `SSH` 服务, 在顺利部署 `spleen` 的客户端和服务端后, 通过公网服务器(假定 IP 为`1.1.1.1`), 可以直接通过端口映射来连接你的家庭服务器/内网主机:
+Spleen 侧重于简洁的配置流与多层级的安全防护:
 
-```shell
-ssh -p 5000 leviathan@1.1.1.1 # 即可直接连接到家庭服务器/内网主机
+*   **连接池复用**: 通过预建立隧道减少 TCP 握手开销, 提升请求响应速度.
+*   **指纹锁定 (TOFU)**: 采用 Trust-On-First-Use 机制, 首次连接自动记录并锁定服务端指纹, 防范中间人攻击.
+*   **全链路加密**: 所有隧道流量均强制运行在 TLS 1.2/1.3 之上, 确保传输私密性.
+*   **身份验证机制**: 使用基于 Nonce 的挑战响应协议, 防范重放攻击.
+*   **只读控制台**: 控制台只提供观测能力, 配置变更全部通过配置文件完成（变更后需重启服务生效）。
+*   **透明化配置**: 支持一键生成配对的 JSON 配置文件.
+*   **抗 DDoS 与资源保护**: 内置连接频率限制与报文长度校验，有效降低内存放大风险与黑客攻击.
+
+---
+
+## 快速启动
+
+推荐使用 Docker Compose 完成快速部署.
+
+### 1. 准备工作
+
+在**公网服务器**与**内网服务器**上分别执行以下命令克隆项目:
+
+```bash
+git clone https://github.com/leviathan/spleen.git
+cd spleen
 ```
 
-## 如何使用
+### 2. 生成安全令牌 (推荐在内网服务器执行)
 
-### 家庭服务器/内网主机部署 spleen-client
+为了安全，推荐在**内网服务器（可信环境）**生成 Token。运行初始化命令，会生成一个高强度的全局安全令牌:
 
-* 通过 [release](https://github.com/Leviathan1995/spleen/releases) 下载对应架构的 spleen 包:
-```shell
-# wget 下载 (请自行替换最新版本)
-> wget https://github.com/Leviathan1995/spleen/releases/download/v0.0.9/spleen_0.0.9_Linux_64-bit.tar.gz
-
-# 解压
-> tar -zxvf spleen_0.0.9_Linux_64-bit.tar.gz
-> cd spleen_0.0.9_Linux_64-bit/
-
-# 配置公网服务器地址
-> vim .spleen-client.json
-{
-  "ClientID"  : 1, # 内网服务器 ID, 全局唯一 [1, 2, ...]
-  "ServerIP"  : "127.0.0.1", # 公网服务器 IP
-  "ServerPort": 1234, # 公网服务器监听端口
-  "LimitRate" : [
-    "5001:512" # 指定内网服务的流速限制, 例如指定内网 5001 端口的流速不要超过 512 KB/s, 单位是 KB, 默认不限制, 0 值即为不限制.
-  ]
-}
-
-# 启动
-> ./spleen-client -c .client.json # 默认预留 10 个活跃连接
+```bash
+docker-compose run --rm spleen-init
 ```
 
-### 公网服务器部署 spleen-server
+> [!NOTE]
+> 该命令仅用于生成并打印 Token, `--rm` 参数用于在任务完成后自动清理容器。
 
-* 通过 [release](https://github.com/Leviathan1995/spleen/releases) 下载对应架构的 spleen 包:
-```shell
-# wget 下载 (请自行替换最新版本)
-> wget https://github.com/Leviathan1995/spleen/releases/download/v0.0.9/spleen_0.0.9_Linux_64-bit.tar.gz
+### 3. 配置并启动内网客户端 (获取 ClientID)
 
-# 解压
-> tar -zxvf spleen_0.0.9_Linux_64-bit.tar.gz
-> cd spleen_0.0.9_Linux_64-bit/
+为了配置服务端的静态映射规则，我们需要先获取客户端的唯一 ID。
 
-# 配置端口转发规则
-> vim .spleen-server.json
+1.  **编辑 `client-config.json`**:
+    *   将 `token` 字段改为您生成的 Token。
+    *   将 `server_addr` 改为您的公网服务器 IP。
+2.  **启动客户端**:
+    ```bash
+    docker-compose up -d spleen-client
+    ```
+3.  **获取 ID (两种方式)**:
+    *   **方式一 (推荐)**: 直接查看本地文件获取:
+        ```bash
+        cat data/client/.spleen_client_id
+        ```
+    *   **方式二**: 查看容器日志:
+        ```bash
+        docker-compose logs --tail=20 spleen-client
+        ```
 
+### 4. 配置并启动公网服务端
+
+基于初始化的 Token 和 ClientID，配置服务端：
+
+1.  **编辑 `server-config.json`**:
+    *   将 `token` 修改为 init 时生成的令牌。
+    *   在 `mapping_rules` 中填入客户端初始化时生成的 `client_id`。
+    *   (可选) 修改 `dashboard_pwd` (默认为 `admin`)。
+2.  **启动服务端**:
+    ```bash
+    docker-compose up -d spleen-server
+    ```
+
+### 5. 访问控制台
+
+打开 `http://<公网IP>:54321`, 查看状态与映射信息。  
+说明:
+- 控制台只读, 用于观测和排障, 不用于写入配置.
+- 映射规则列表会展示静态规则与动态规则, 但不会返回 Token 等敏感字段.
+
+---
+
+## 参数设置
+
+### 服务端配置示例说明)
+```json
 {
-  "ServerIP"   : "0.0.0.0", # 公网服务器监听地址
-  "ServerPort"   : 1234, # 公网服务器监听端口, 该端口用来与家庭服务器/内网主机建立通信隧道
-  "Rules" : [ # 端口映射规则
+  "token": "your-secret-token", 
+  "tunnel_listen_address": "0.0.0.0:5432",
+  "panel": {
+    "dashboard_addr": "0.0.0.0:54321",
+    "dashboard_user": "admin",
+    "dashboard_pwd": "admin."
+  },
+  "mapping_rules": [
     {
-      # 即访问公网服务器的 5000 端口等于直接访问 ID 为 1 的家庭服务器/内网主机的 22 端口
-      "ClientID" : 1,     # Client ID, 在 .spleen-client.json 中配置
-      "LocalPort" : 5000, # 公网端口
-      "MappingPort" : 22  # 内网转发端口
-    },
-    {
-      # 即访问公网服务器的 5001 端口等于直接访问 ID 为 2 的家庭服务器/内网主机的 443 端口
-      "ClientID" : 2,     # Client ID, 在 .spleen-client.json 中配置
-      "LocalPort" : 5001, # 公网端口
-      "MappingPort" : 443 # 内网转发端口
+      "id": "ssh-main",
+      "client_id": "",
+      "public_port": 2222,
+      "target_port": 22,
+      "remark": "备注信息"
     }
   ]
 }
-
-# 启动
-> ./spleen-server -c .server.json
-2022/01/12 19:39:39 The server listening for the intranet server at 0.0.0.0:1234 successful.
-2022/01/12 19:39:39 The server listening at 0.0.0.0:5001 successful.
-2022/01/12 19:39:39 The server listening at 0.0.0.0:5000 successful.
 ```
 
-## SSH 服务样例
+**参数说明**:
 
-当我们分别按照上述步骤在公网服务器部署了 `spleen-server`、家庭服务器/内网主机部署了 `spleen-client`后, 通过设定的转发规则 `5000:22`即访问公网服务器的 5000 端口就等于访问家庭服务器/内网主机的 22 端口.
-我们可以直接使用 `SSH` 连接家庭服务器/内网主机, 假如公网 IP 为 `1.1.1.1`:
-```shell
-ssh -p 5000 leviathan@1.1.1.1 # 即可直接连接到家庭服务器/内网主机
-```
+| 参数 | 说明 | 示例值 |
+|------|------|--------|
+| `token` | **全局安全令牌**。所有连接（静态映射与动态注册）均使用此令牌进行挑战响应验证。 | 任意长随机字符串 |
+| `tunnel_listen_address` | TLS 隧道监听地址（Client 连接此端口） | `0.0.0.0:5432` |
+| `panel.dashboard_addr` | Dashboard HTTP 监听地址 | `0.0.0.0:54321` |
+| `panel.dashboard_user` | Dashboard 登录用户名 | `admin` |
+| `panel.dashboard_pwd` | Dashboard 登录密码（PBKDF2 哈希） | 使用 `-gen-pwd` 生成 |
+| `mapping_rules` | 静态映射规则列表 | 详见下方 |
 
-## TODO
 
-* 增加安全性配置, 鉴权
-* 支持 `UDP` 转发
-* 支持 `QUIC` 传输协议提升访问速度
+**映射规则字段**:
 
-###
-# License
-[GNU General Public License v3.0](https://github.com/Leviathan1995/spleen/blob/master/LICENSE)
+| 字段 | 说明 | 是否必填 |
+|------|------|:-------:|
+| `id` | 规则唯一标识符 | ✅ |
+| `client_id` | 客户端 UUID（与客户端 `.spleen_client_id` 一致） | ✅ |
+| `public_port` | 公网服务器暴露的接收端口 | ✅ |
+| `target_port` | 流量转发到内网客户端的目标端口 | ✅ |
+| `remark` | 备注信息 | ❌ |
+
+
+### 如何新增内网节点 (多客户端)
+
+由于采用“全站统一 Token”设计，新增第 2、3...n 个内网节点非常简单：
+
+1.  **Git Clone**: 在新的内网服务器上克隆仓库：`git clone https://github.com/leviathan/spleen.git`。
+2.  **配置**: 编辑仓库自带的 `client-config.json`，填入公网服务器地址及全局 `token`。
+3.  **启动**: 运行 `docker-compose up -d spleen-client`。客户端启动后会自动生成独特的 ID。
+4.  **获取 ID**: 运行 `cat data/client/.spleen_client_id` 获取该客户端的 ID。
+5.  **关联**: 将新生成的 `client_id` 填入公网服务器 `server-config.json` 的 `mapping_rules` 中并重启服务端。
+
+---
+
+## 安全建议
+
+1.  **最小权限运行**: 建议使用非 root 用户运行 Spleen 进程。
+2.  **文件权限**: `server-config.json` 和 `client-config.json` 包含敏感凭据。使用 `spleen-init` 时会自动以 `0600` 权限（仅属主可读写）创建。若手动创建，请务必执行 `chmod 600 *.json`。
+3.  **防火墙策略**:
+    - 公网服务器建议**仅放行** `tunnel_listen_address` (如 5432) 和必要的业务映射端口。
+
+---
+
+## 开源协议
+[Apache License 2.0](LICENSE)

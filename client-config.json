@@ -1,0 +1,6 @@
+{
+  "server_addr": "127.0.0.1:5432",
+  "client_id": "",
+  "token": "",
+  "pool_size": 10
+}

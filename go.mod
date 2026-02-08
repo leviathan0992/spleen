@@ -1,3 +1,3 @@
 module github.com/leviathan1995/spleen
 
-go 1.16
+go 1.21

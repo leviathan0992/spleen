@@ -1,0 +1,58 @@
+services:
+  # -------------------------------------------------------------------
+  # 1. Server Gateway
+  # Config: server-config.json
+  # -------------------------------------------------------------------
+  spleen-server:
+    build:
+      context: .
+      target: server
+    image: spleen-server:latest
+    container_name: spleen-server
+    restart: unless-stopped
+    ports:
+      - "54321:54321" # Dashboard
+      - "5432:5432" # Tunnel connection port
+      - "2222:2222" # Example mapping port
+    volumes:
+      # Mount configuration file
+      - ./server-config.json:/app/server-config.json
+      # Persist data (certs, SQLite, etc.)
+      - ./data/server:/app/data
+    # Specify configuration file to start (ENTRYPOINT handles binary)
+    command: [ "-d", "/app/server-config.json" ]
+
+  # -------------------------------------------------------------------
+  # 2. Tunnel Client
+  # Config: client-config.json
+  # -------------------------------------------------------------------
+  spleen-client:
+    build:
+      context: .
+      target: client
+    image: spleen-client:latest
+    container_name: spleen-client
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      # Mount configuration file
+      - ./client-config.json:/app/client-config.json
+      # Persist data (ID)
+      - ./data/client:/app/data
+    # Specify configuration file to start (ENTRYPOINT handles binary)
+    command: [ "-d", "/app/client-config.json" ]
+
+  # -------------------------------------------------------------------
+  # 3. Initialization Utility (Init)
+  # Used to generate paired configuration files
+  # -------------------------------------------------------------------
+  spleen-init:
+    build:
+      context: .
+      target: builder
+    profiles: [ "tools" ]
+    volumes:
+      - .:/output
+    working_dir: /output
+    # Run -init directly (builder stage has the binary at /spleen-server)
+    command: [ "/spleen-server", "-init" ]

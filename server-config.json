@@ -1,0 +1,10 @@
+{
+  "panel": {
+    "dashboard_addr": "0.0.0.0:54321",
+    "dashboard_user": "admin",
+    "dashboard_pwd": "pbkdf2$120000$b5662a329db4f9a512caee5e5086be16$3b97e57beef5217b49eccf7532d54321e86619fec985668e063f44bd567b84d9"
+  },
+  "tunnel_listen_address": "0.0.0.0:5432",
+  "token": "",
+  "mapping_rules": []
+}

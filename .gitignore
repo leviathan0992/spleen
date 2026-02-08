@@ -1,6 +1,31 @@
+# IDEs
 .idea/
+.vscode/
+.DS_Store
+
+# Binaries
 dist/
 server/server
 server/server.exe
 client/client
 client/client.exe
+spleen-server
+spleen-client
+
+# Certificates & Keys
+*.pem
+*.key
+*.crt
+*.csr
+
+# Local State & Data
+.spleen_*
+.spleen-admin-password
+data/
+.env
+.gocache/
+.gomodcache/
+
+# Logs
+*.log
+tags
