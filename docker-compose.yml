@@ -18,7 +18,7 @@ services:
       # Mount configuration file
       - ./server-config.json:/app/server-config.json
       # Persist data (certs, SQLite, etc.)
-      - ./data/server:/app/data
+      - ./data:/app/data
     # Specify configuration file to start (ENTRYPOINT handles binary)
     command: [ "-d", "/app/server-config.json" ]
 
@@ -38,7 +38,7 @@ services:
       # Mount configuration file
       - ./client-config.json:/app/client-config.json
       # Persist data (ID)
-      - ./data/client:/app/data
+      - ./data:/app/data
     # Specify configuration file to start (ENTRYPOINT handles binary)
     command: [ "-d", "/app/client-config.json" ]
 

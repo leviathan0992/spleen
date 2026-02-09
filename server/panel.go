@@ -535,8 +535,8 @@ func (wp *WebPanel) resolveGeoIP(ip string) string {
 	client := http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(fmt.Sprintf("https://ip.useragentinfo.com/json?ip=%s", ip))
 	if err != nil {
-		/* Fallback or just return empty to try later */
-		return ""
+		log.Printf("[WARN] GeoIP request failed for %s: %v", ip, err)
+		return "查询失败"
 	}
 	defer resp.Body.Close()
 
@@ -547,7 +547,8 @@ func (wp *WebPanel) resolveGeoIP(ip string) string {
 		ISP      string `json:"isp"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return ""
+		log.Printf("[WARN] GeoIP parse failed for %s: %v", ip, err)
+		return "解析错误"
 	}
 
 	if result.Country == "" {
