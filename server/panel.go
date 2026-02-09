@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -368,7 +369,7 @@ func (wp *WebPanel) handleServers(w http.ResponseWriter, r *http.Request) {
 			Online:      s.Online,
 			TunnelCount: s.TunnelCount,
 			ActiveConns: s.ActiveConns,
-			LastSeen:    s.LastSeen.Format("15:04:05"),
+			LastSeen:    s.LastSeen.Format("2006-01-02 15:04:05"),
 		}
 	}
 	jsonResponse(w, map[string]interface{}{"servers": safeServers})
@@ -504,8 +505,23 @@ func (wp *WebPanel) geoIPWorker() {
 }
 
 func (wp *WebPanel) resolveGeoIP(ip string) string {
-	if ip == "127.0.0.1" || ip == "localhost" || strings.HasPrefix(ip, "192.168.") || strings.HasPrefix(ip, "10.") {
+	/* 1. Localhost & Private IP checks */
+	/* 10.0.0.0/8 */
+	if ip == "127.0.0.1" || ip == "localhost" || strings.HasPrefix(ip, "10.") {
 		return "局域网"
+	}
+	/* 192.168.0.0/16 */
+	if strings.HasPrefix(ip, "192.168.") {
+		return "局域网"
+	}
+	/* 172.16.0.0/12 */
+	if strings.HasPrefix(ip, "172.") {
+		parts := strings.Split(ip, ".")
+		if len(parts) >= 2 {
+			if v, err := strconv.Atoi(parts[1]); err == nil && v >= 16 && v <= 31 {
+				return "局域网"
+			}
+		}
 	}
 
 	wp.geoMu.RLock()
@@ -515,29 +531,30 @@ func (wp *WebPanel) resolveGeoIP(ip string) string {
 		return loc
 	}
 
-	/* Fetch from API. */
-	client := http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://ip-api.com/json/%s?lang=zh-CN", ip))
+	/* Fetch from ip.useragentinfo.com (China friendly) */
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("https://ip.useragentinfo.com/json?ip=%s", ip))
 	if err != nil {
+		/* Fallback or just return empty to try later */
 		return ""
 	}
 	defer resp.Body.Close()
 
 	var result struct {
-		Status  string `json:"status"`
-		Country string `json:"country"`
-		Region  string `json:"regionName"`
-		City    string `json:"city"`
+		Country  string `json:"country"`
+		Province string `json:"province"`
+		City     string `json:"city"`
+		ISP      string `json:"isp"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return ""
 	}
 
-	if result.Status != "success" {
+	if result.Country == "" {
 		return "未知"
 	}
 
-	finalLoc := fmt.Sprintf("%s %s %s", result.Country, result.Region, result.City)
+	finalLoc := fmt.Sprintf("%s %s %s %s", result.Country, result.Province, result.City, result.ISP)
 	finalLoc = strings.TrimSpace(finalLoc)
 
 	wp.geoMu.Lock()

@@ -15,7 +15,7 @@ Spleen focuses on a streamlined configuration workflow and multi-layered securit
 *   **Read-Only Dashboard**: Integrated monitoring of connection status, traffic stats, and **all connection attempts (with GeoIP and Success/Failure auditing)**.
 *   **GeoIP Identification**: Automatic visitor location detection, supporting LAN IP recognition.
 *   **Fail Audit**: Automatically records and displays all failed public access attempts to help identify potential scanning and brute-force attacks.
-*   **Transparent Configuration**: Supports one-click generation of paired JSON configuration files.
+*   **Transparent Configuration**: Simple configuration with a single shared token; Client IDs are auto-generated.
 *   **Anti-DDoS & Resource Protection**: Built-in rate limiting and message length validation to mitigate memory amplification risks and attacks.
 
 ---
@@ -84,6 +84,30 @@ Navigate to `http://<Public_IP>:54321` to monitor status and mappings.
 Note:
 - The dashboard is read-only and designed for observation/debugging.
 - Mapping lists show both static and active connections but will never expose sensitive tokens.
+
+---
+
+## Source Code Startup
+
+### 1. Prerequisites
+Requires Go 1.22+ environment.
+
+### 2. Build
+```bash
+go build -o spleen-server ./server
+go build -o spleen-client ./client
+```
+
+### 3. Start Client (Obtain ID)
+1. Generate a secure Token (e.g., using `openssl rand -hex 16`).
+2. Create `client-config.json` (see Configuration Reference below), filling in the public IP and Token.
+3. Start: `./spleen-client`
+4. Obtain Client ID: Check the `.spleen_client_id` file in the `data/` directory.
+
+### 4. Start Server
+1. Create `server-config.json` (see Configuration Reference below), filling in the Token.
+2. Add the Client ID obtained in the previous step to `mapping_rules`.
+3. Start: `./spleen-server`
 
 ---
 
@@ -158,20 +182,6 @@ The "One Token" architecture makes it easy to scale horizontally:
 ## License
 [Apache License 2.0](LICENSE)
 
----
 
-## Security Strategies
 
-Spleen employs multi-layer security to protect your internal resources:
 
-1.  **Tunnel Protection (Auth Guard)**:
-    -   If a client IP fails authentication 8 consecutive times (wrong Token or Nonce replay), the server will **ban that IP for 20 minutes**.
-    -   During this period, all handshake requests from that IP are rejected immediately.
-
-2.  **Public Port Protection**:
-    -   **Timeout Mechanism**: If a connection is made but no internal tunnel is available, the server actively disconnects after 5 seconds.
-    -   **Failure Audit**: All failed connection attempts (timeouts, empty pools, etc.) are logged in real-time on the dashboard for manual intervention.
-
-3.  **Zero-Trust Access**:
-    -   Clients without a valid Token and registered ClientID cannot establish any tunnels.
-    -   Uses TOFU to pin the server certificate and prevent man-in-the-middle attacks.

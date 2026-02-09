@@ -105,11 +105,7 @@ func printBanner(serverAddr, clientID, configPath string, poolSize int) {
 	fmt.Printf("║               Spleen Client v%-30s║\n", Version)
 	fmt.Println("╠═════════════════════════════════════════════════════════════╣")
 	fmt.Printf("║  Server:     %-48s║\n", serverAddr)
-	short := clientID
-	if len(short) > 8 {
-		short = short[:8]
-	}
-	fmt.Printf("║  ClientID:   %s...%-36s║\n", strings.ToUpper(short), "")
+	fmt.Printf("║  ClientID:   %-48s║\n", strings.ToUpper(clientID))
 	fmt.Printf("║  Config:     %-48s║\n", configPath)
 	fmt.Printf("║  Pool Size:  %-48d║\n", poolSize)
 	fmt.Println("╚═════════════════════════════════════════════════════════════╝")

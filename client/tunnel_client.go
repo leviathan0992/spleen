@@ -210,6 +210,7 @@ func (c *TunnelClient) dialTunnelServer() (*tls.Conn, error) {
 		return nil, fmt.Errorf("authentication failed: %s", resp.Message)
 	}
 
+	log.Printf("[INFO] Tunnel connection established (Pool size: %d)", c.poolSize)
 	return conn, nil
 }
 
@@ -267,6 +268,8 @@ func (c *TunnelClient) heartbeatLoop() {
 	for range ticker.C {
 		if err := c.sendHeartbeat(); err != nil {
 			log.Printf("[WARN] Heartbeat failed: %v", err)
+		} else {
+			c.logHeartbeatSuccess()
 		}
 	}
 }
@@ -329,6 +332,10 @@ func (c *TunnelClient) sendHeartbeat() error {
 	}
 
 	return nil
+}
+
+func (c *TunnelClient) logHeartbeatSuccess() {
+	log.Printf("[INFO] Heartbeat: Server acknowledged")
 }
 
 /* Loads client configuration from a JSON file. */

@@ -8,21 +8,21 @@ Spleen 是一款采用 Go 语言编写的反向隧道工具。它用于在复杂
 
 Spleen 侧重于简洁的配置流与多层级的安全防护:
 
-*   **连接池复用**: 通过预建立隧道减少 TCP 握手开销, 提升请求响应速度.
-*   **指纹锁定 (TOFU)**: 采用 Trust-On-First-Use 机制, 首次连接自动记录并锁定服务端指纹, 防范中间人攻击.
-*   **全链路加密**: 所有隧道流量均强制运行在 TLS 1.2/1.3 之上, 确保传输私密性.
-*   **身份验证机制**: 使用基于 Nonce 的挑战响应协议, 防范重放攻击.
+*   **连接池复用**: 通过预建立隧道减少 TCP 握手开销, 提升请求响应速度。
+*   **指纹锁定 (TOFU)**: 采用 Trust-On-First-Use 机制, 首次连接自动记录并锁定服务端指纹, 防范中间人攻击。
+*   **全链路加密**: 所有隧道流量均强制运行在 TLS 1.2/1.3 之上, 确保传输私密性。
+*   **身份验证机制**: 使用基于 Nonce 的挑战响应协议, 防范重放攻击。
 *   **只读控制台**: 实时展示连接状态、流量统计及**所有连接尝试（包含地理位置与成功/失败审计）**。
 *   **地理位置识别**: 自动识别访问者归属地，支持内网 IP 识别。
 *   **失败审计**: 自动记录并展示所有失败的访问尝试，帮助识别潜在的扫描与暴力破解行为。
-*   **透明化配置**: 支持一键生成配对的 JSON 配置文件.
-*   **抗 DDoS 与资源保护**: 内置连接频率限制与报文长度校验，有效降低内存放大风险与黑客攻击.
+*   **透明化配置**: 仅需一个密钥即可完成双端配置，客户端 ID 自动生成。
+*   **抗 DDoS 与资源保护**: 内置连接频率限制与报文长度校验，有效降低内存放大风险与黑客攻击。
 
 ---
 
 ## 快速启动
 
-推荐使用 Docker Compose 完成快速部署.
+推荐使用 Docker Compose 完成快速部署。
 
 ### 1. 准备工作
 
@@ -44,25 +44,21 @@ docker-compose run --rm spleen-init
 > [!NOTE]
 > 该命令仅用于生成并打印 Token, `--rm` 参数用于在任务完成后自动清理容器。
 
-### 3. 配置并启动内网客户端 (获取 ClientID)
+### 3. 配置并启动内网客户端 (获取 Client ID)
 
 为了配置服务端的静态映射规则，我们需要先获取客户端的唯一 ID。
 
 1.  **编辑 `client-config.json`**:
-    *   将 `token` 字段改为您生成的 Token。
-    *   将 `server_addr` 改为您的公网服务器 IP。
+    *   将 `token` 字段改为步骤 2 生成的 Token。
+    *   将 `server_addr` 改为公网服务器 IP。
 2.  **启动客户端**:
     ```bash
     docker-compose up -d spleen-client
     ```
-3.  **获取 ID (两种方式)**:
-    *   **方式一 (推荐)**: 直接查看本地文件获取:
+3.  **获取 Client ID**:
+    *   查看本地文件获取:
         ```bash
         cat data/client/.spleen_client_id
-        ```
-    *   **方式二**: 查看容器日志:
-        ```bash
-        docker-compose logs --tail=20 spleen-client
         ```
 
 ### 4. 配置并启动公网服务端
@@ -87,9 +83,33 @@ docker-compose run --rm spleen-init
 
 ---
 
+## 源码启动 (Source Code Startup)
+
+### 1. 环境准备
+需要 Go 1.22+ 环境。
+
+### 2. 编译
+```bash
+go build -o spleen-server ./server
+go build -o spleen-client ./client
+```
+
+### 3. 启动客户端 (获取 ID)
+1. 生成一个安全的 Token (可以使用 `openssl rand -hex 16` 等方式)。
+2. 创建 `client-config.json` (参考下方配置示例)，填入公网 IP 和 Token。
+3. 启动: `./spleen-client`
+4. 获取 Client ID: 查看 `data/` 目录下的 `.spleen_client_id` 文件。
+
+### 4. 启动服务端
+1. 创建 `server-config.json` (参考下方配置示例)，填入 Token。
+2. 将上一步获取的 Client ID 填入 `mapping_rules`。
+3. 启动: `./spleen-server`
+
+---
+
 ## 参数设置
 
-### 服务端配置示例说明)
+### 服务端配置示例说明
 ```json
 {
   "token": "your-secret-token", 
@@ -138,8 +158,7 @@ docker-compose run --rm spleen-init
 
 由于采用“全站统一 Token”设计，新增第 2、3...n 个内网节点非常简单：
 
-1.  **Git Clone**: 在新的内网服务器上克隆仓库：`git clone https://github.com/leviathan0992/spleen.git
-`。
+1.  **Git Clone**: 在新的内网服务器上克隆仓库：`git clone https://github.com/leviathan0992/spleen.git`。
 2.  **配置**: 编辑仓库自带的 `client-config.json`，填入公网服务器地址及全局 `token`。
 3.  **启动**: 运行 `docker-compose up -d spleen-client`。客户端启动后会自动生成独特的 ID。
 4.  **获取 ID**: 运行 `cat data/client/.spleen_client_id` 获取该客户端的 ID。
@@ -158,21 +177,3 @@ docker-compose run --rm spleen-init
 
 ## 开源协议
 [Apache License 2.0](LICENSE)
-
----
-
-## 安全防护策略
-
-Spleen 采用多层次的安全设计来保护您的内网资源：
-
-1.  **隧道连接保护 (Auth Guard)**:
-    -   如果同一个内网客户端累计 8 次认证失败（Token 错误或 Nonce 重放），服务端将自动**封禁该来源 IP 20 分钟**。
-    -   封禁期间，该 IP 的所有握手请求将直接被拒绝。
-
-2.  **公网出口保护**:
-    -   **超时机制**: 如果公网有人尝试连接但没有可用的内网隧道（或隧道忙），服务端会在 5 秒后主动断开。
-    -   **失败审计**: 所有失败的连接尝试（如超时、空池等）都会实时记录并展示在控制台，您可以根据 IP 手动干预。
-
-3.  **零信任访问**:
-    -   不持有有效 Token 和认证 ClientID 的客户端无法建立任何隧道。
-    -   采用 TOFU 机制锁定服务端，防止中间人拦截。

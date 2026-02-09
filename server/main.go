@@ -164,7 +164,7 @@ func printBanner(panelAddr, tunnelAddr, configPath string, rulesCount int, certE
 
 	fmt.Println("╚═════════════════════════════════════════════════════════════╝")
 	fmt.Println()
-	fmt.Printf("[%s] Server started, waiting for clients...\n", time.Now().Format("15:04:05"))
+
 }
 
 func padRight(s string, width int) string {

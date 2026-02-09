@@ -140,6 +140,7 @@ func (m *TunnelManager) handleClientConn(conn net.Conn) {
 	}()
 
 	reject := func(clientID, message string) {
+		log.Printf("[WARN] Client %s (%s) authentication failed: %s", clientID, remoteIP, message)
 		m.recordServerError(clientID, message, true)
 		m.recordAuthFailure(remoteIP)
 		_, _ = conn.Write([]byte(fmt.Sprintf(`{"status":"error","message":%q}`+"\n", message)))
@@ -206,6 +207,7 @@ func (m *TunnelManager) handleClientConn(conn net.Conn) {
 	m.clearAuthFailures(remoteIP)
 
 	if authMsg.Type == "ping" {
+		log.Printf("[INFO] Heartbeat: Received from %s (%s)", authMsg.ClientID, remoteIP)
 		m.markServerSeen(authMsg.ClientID, authMsg.Version)
 		_, _ = conn.Write([]byte(`{"status":"ok","type":"pong"}` + "\n"))
 		return
@@ -214,13 +216,21 @@ func (m *TunnelManager) handleClientConn(conn net.Conn) {
 	_, _ = conn.Write([]byte(`{"status":"ok"}` + "\n"))
 	_ = conn.SetDeadline(time.Time{})
 
+	log.Printf("[INFO] New tunnel connection accepted from %s (%s)", authMsg.ClientID, remoteIP)
 	m.markServerSeen(authMsg.ClientID, authMsg.Version)
 	m.recordAcceptedTunnel(authMsg.ClientID)
 
+	/* Create pool with requested size (capped). */
 	m.mu.Lock()
 	pool, ok := m.clientPools[authMsg.ClientID]
 	if !ok {
-		pool = make(chan net.Conn, 100)
+		poolSize := authMsg.PoolSize
+		if poolSize <= 0 {
+			poolSize = 10
+		} else if poolSize > 1024 {
+			poolSize = 1024
+		}
+		pool = make(chan net.Conn, poolSize)
 		m.clientPools[authMsg.ClientID] = pool
 	}
 	m.mu.Unlock()
@@ -230,9 +240,8 @@ func (m *TunnelManager) handleClientConn(conn net.Conn) {
 		closeOnReturn = false
 		m.adjustIdleTunnels(authMsg.ClientID, 1)
 	case <-time.After(10 * time.Second):
-		log.Printf("[WARN] Tunnel connection pool full for client %s", authMsg.ClientID[:8])
+		log.Printf("[WARN] Tunnel pool full for client %s (cap %d). Rejecting connection.", authMsg.ClientID, cap(pool))
 		m.recordServerError(authMsg.ClientID, "connection pool full", true)
-		m.recordAuthFailure(remoteIP)
 	}
 }
 
@@ -320,7 +329,7 @@ func (m *TunnelManager) handlePublicConn(publicConn net.Conn, serverID string, p
 
 	remoteIP := remoteHost(publicConn.RemoteAddr())
 	m.connGuardMu.Lock()
-	if m.connGuard[remoteIP] >= 8 {
+	if m.connGuard[remoteIP] >= 50 {
 		m.connGuardMu.Unlock()
 		m.recordServerError(serverID, fmt.Sprintf("too many connections from %s", remoteIP), true)
 		return
